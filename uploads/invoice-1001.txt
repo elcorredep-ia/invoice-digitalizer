@@ -1,0 +1,5 @@
+invoice_id: INV-1001
+issuer: Contoso
+issuer_tax_id: RFC001
+customer: Cliente A
+total_amount: 350.00
