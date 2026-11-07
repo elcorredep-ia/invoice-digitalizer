@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -31,17 +32,16 @@ def _get_invoice_payload(invoice: Invoice | None) -> dict[str, Any]:
     if invoice is None:
         return {}
     return {
-        "invoice_id": invoice.invoice_id,
-        "issuer_name": invoice.issuer_name,
-        "issuer_tax_id": invoice.issuer_tax_id,
+        "invoice_number": invoice.invoice_number or invoice.invoice_id or "",
+        "seller_name": invoice.seller_name or invoice.issuer_name or "",
+        "rfc": invoice.rfc or invoice.issuer_tax_id or "",
         "customer_name": invoice.customer_name,
-        "customer_tax_id": invoice.customer_tax_id,
+        "seller_address": invoice.seller_address,
         "issue_date": invoice.issue_date,
-        "due_date": invoice.due_date,
-        "currency": invoice.currency,
+        "purchase_details": invoice.purchase_details or {},
         "subtotal": invoice.subtotal,
-        "tax_amount": invoice.tax_amount,
-        "total_amount": invoice.total_amount,
+        "taxes": invoice.taxes or invoice.tax_amount,
+        "total": invoice.total or invoice.total_amount,
     }
 
 
@@ -96,9 +96,9 @@ def get_dashboard_summary() -> dict[str, int]:
         }
 
 
-def process_uploaded_invoice(file_obj: Any, user_id: int) -> dict[str, Any]:
+def preview_uploaded_invoice(file_obj: Any) -> dict[str, Any]:
     if file_obj is None:
-        raise ValueError("Debe seleccionar un archivo válido")
+        raise ValueError("Please select a valid file.")
 
     target_path, safe_name = _save_uploaded_file(file_obj)
     file_bytes = file_obj.getvalue()
@@ -106,14 +106,76 @@ def process_uploaded_invoice(file_obj: Any, user_id: int) -> dict[str, Any]:
     file_type = safe_name.rsplit(".", 1)[-1].lower() if "." in safe_name else "unknown"
 
     extracted = extract_invoice_data(target_path)
+    return {
+        "file_name": safe_name,
+        "file_type": file_type,
+        "target_path": str(target_path),
+        "file_hash": file_hash,
+        "extracted": extracted,
+    }
+
+
+def _merge_edited_invoice_data(extracted: dict[str, Any], edited_data: dict[str, Any] | None) -> dict[str, Any]:
+    if not edited_data:
+        return extracted
+
+    merged = dict(extracted)
+    for key in (
+        "invoice_number",
+        "seller_name",
+        "rfc",
+        "customer_name",
+        "seller_address",
+        "issue_date",
+        "purchase_details",
+        "subtotal",
+        "taxes",
+        "total",
+        "currency",
+        "customer_tax_id",
+        "due_date",
+        "issuer_name",
+        "issuer_tax_id",
+        "tax_amount",
+        "total_amount",
+    ):
+        if key not in edited_data:
+            continue
+        value = edited_data.get(key)
+        if value is None:
+            continue
+        if key == "purchase_details" and isinstance(value, str):
+            try:
+                merged[key] = json.loads(value)
+            except json.JSONDecodeError:
+                merged[key] = value
+        else:
+            merged[key] = value
+    return merged
+
+
+def process_uploaded_invoice(file_obj: Any, user_id: int, edited_data: dict[str, Any] | None = None) -> dict[str, Any]:
+    if file_obj is None:
+        raise ValueError("Please select a valid file.")
+
+    target_path, safe_name = _save_uploaded_file(file_obj)
+    file_bytes = file_obj.getvalue()
+    file_hash = _build_file_hash(file_bytes)
+    file_type = safe_name.rsplit(".", 1)[-1].lower() if "." in safe_name else "unknown"
+
+    extracted = _merge_edited_invoice_data(extract_invoice_data(target_path), edited_data)
+    invoice_number = extracted.get("invoice_number") or extracted.get("invoice_id") or "INV-AUTO"
+    seller_name = extracted.get("seller_name") or extracted.get("issuer_name") or "Unknown seller"
 
     with SessionLocal() as session:
         existing = session.execute(
-            select(Invoice).where(
-                Invoice.invoice_id == extracted.get("invoice_id"),
-                Invoice.issuer_name == extracted.get("issuer_name"),
+            select(Invoice)
+            .where(
+                ((Invoice.invoice_number == invoice_number) | (Invoice.invoice_id == invoice_number)),
+                ((Invoice.seller_name == seller_name) | (Invoice.issuer_name == seller_name)),
             )
-        ).scalar_one_or_none()
+            .order_by(Invoice.created_at.desc())
+        ).scalars().first()
 
         if existing is not None:
             decision = evaluate_invoice_data(_get_invoice_payload(existing), extracted)
@@ -142,22 +204,29 @@ def process_uploaded_invoice(file_obj: Any, user_id: int) -> dict[str, Any]:
                 )
                 return {
                     "status": "rejected",
-                    "message": "Factura duplicada detectada y rechazada automáticamente.",
-                    "invoice_id": existing.invoice_id,
+                    "message": "Duplicate invoice detected and automatically rejected.",
+                    "invoice_number": existing.invoice_number or existing.invoice_id,
                 }
 
             pending_invoice = Invoice(
-                invoice_id=extracted.get("invoice_id"),
-                issuer_name=extracted.get("issuer_name"),
-                issuer_tax_id=extracted.get("issuer_tax_id"),
-                customer_name=extracted.get("customer_name"),
-                customer_tax_id=extracted.get("customer_tax_id"),
-                issue_date=extracted.get("issue_date"),
-                due_date=extracted.get("due_date"),
-                currency=extracted.get("currency") or "USD",
+                invoice_number=invoice_number,
+                seller_name=seller_name,
+                rfc=extracted.get("rfc") or extracted.get("issuer_tax_id") or "",
+                customer_name=extracted.get("customer_name") or "",
+                seller_address=extracted.get("seller_address") or "",
+                issue_date=extracted.get("issue_date") or "",
+                purchase_details=extracted.get("purchase_details") or {},
                 subtotal=str(extracted.get("subtotal") or "0"),
-                tax_amount=str(extracted.get("tax_amount") or "0"),
-                total_amount=str(extracted.get("total_amount") or "0"),
+                taxes=str(extracted.get("taxes") or extracted.get("tax_amount") or "0"),
+                total=str(extracted.get("total") or extracted.get("total_amount") or "0"),
+                invoice_id=invoice_number,
+                issuer_name=seller_name,
+                issuer_tax_id=extracted.get("rfc") or extracted.get("issuer_tax_id") or "",
+                customer_tax_id=extracted.get("customer_tax_id") or "",
+                due_date=extracted.get("due_date") or "",
+                currency=extracted.get("currency") or "USD",
+                tax_amount=str(extracted.get("taxes") or extracted.get("tax_amount") or "0"),
+                total_amount=str(extracted.get("total") or extracted.get("total_amount") or "0"),
                 status="update_required",
                 validation_status="needs_approval",
                 source_file_type=file_type,
@@ -193,22 +262,29 @@ def process_uploaded_invoice(file_obj: Any, user_id: int) -> dict[str, Any]:
             )
             return {
                 "status": "update_required",
-                "message": "Se detectó una actualización pendiente de aprobación del usuario.",
-                "invoice_id": pending_invoice.id,
+                "message": "A change was detected and is pending user approval.",
+                "invoice_number": pending_invoice.invoice_number,
             }
 
         invoice = Invoice(
-            invoice_id=extracted.get("invoice_id"),
-            issuer_name=extracted.get("issuer_name"),
-            issuer_tax_id=extracted.get("issuer_tax_id"),
-            customer_name=extracted.get("customer_name"),
-            customer_tax_id=extracted.get("customer_tax_id"),
-            issue_date=extracted.get("issue_date"),
-            due_date=extracted.get("due_date"),
-            currency=extracted.get("currency") or "USD",
+            invoice_number=invoice_number,
+            seller_name=seller_name,
+            rfc=extracted.get("rfc") or extracted.get("issuer_tax_id") or "",
+            customer_name=extracted.get("customer_name") or "",
+            seller_address=extracted.get("seller_address") or "",
+            issue_date=extracted.get("issue_date") or "",
+            purchase_details=extracted.get("purchase_details") or {},
             subtotal=str(extracted.get("subtotal") or "0"),
-            tax_amount=str(extracted.get("tax_amount") or "0"),
-            total_amount=str(extracted.get("total_amount") or "0"),
+            taxes=str(extracted.get("taxes") or extracted.get("tax_amount") or "0"),
+            total=str(extracted.get("total") or extracted.get("total_amount") or "0"),
+            invoice_id=invoice_number,
+            issuer_name=seller_name,
+            issuer_tax_id=extracted.get("rfc") or extracted.get("issuer_tax_id") or "",
+            customer_tax_id=extracted.get("customer_tax_id") or "",
+            due_date=extracted.get("due_date") or "",
+            currency=extracted.get("currency") or "USD",
+            tax_amount=str(extracted.get("taxes") or extracted.get("tax_amount") or "0"),
+            total_amount=str(extracted.get("total") or extracted.get("total_amount") or "0"),
             status="approved",
             validation_status="valid",
             source_file_type=file_type,
@@ -245,8 +321,8 @@ def process_uploaded_invoice(file_obj: Any, user_id: int) -> dict[str, Any]:
 
         return {
             "status": "approved",
-            "message": "Factura registrada correctamente.",
-            "invoice_id": invoice.id,
+            "message": "Invoice registered successfully.",
+            "invoice_number": invoice.invoice_number,
         }
 
 
@@ -254,9 +330,9 @@ def approve_invoice_update(invoice_id: int) -> dict[str, Any]:
     with SessionLocal() as session:
         invoice = session.get(Invoice, invoice_id)
         if invoice is None:
-            return {"status": "not_found", "message": "Factura no encontrada."}
+            return {"status": "not_found", "message": "Invoice not found."}
         invoice.status = "approved"
         invoice.validation_status = "valid"
         invoice.updated_at = datetime.now(timezone.utc)
         session.commit()
-        return {"status": "approved", "message": "Actualización aceptada y factura reemplazada."}
+        return {"status": "approved", "message": "Update accepted and invoice replaced."}

@@ -1,0 +1,8 @@
+invoice_number: INV-1002
+seller_name: Fabricantes del Norte
+customer_name: Cliente B
+rfc: ABC010101XYZ
+seller_address: Av. Reforma 456, CDMX
+subtotal: 100.00
+taxes: 10.00
+total: 110.00

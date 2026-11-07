@@ -1,13 +1,14 @@
 # Invoice Digitalizer
 
-Web application for invoice digitization, duplicate detection, and intelligent query.
+Web application for invoice digitization using Azure Content Understanding, duplicate detection, and audit-ready validation.
 
 ## Features
 
 - User authentication and authorization
-- Invoice upload (PDF, XML, images)
-- AI-based extraction simulation and validation layer
-- Duplicate and update detection by invoice id + issuer
+- Invoice upload (PDF, XML, images, and text)
+- Azure Content Understanding invoice extraction
+- Standardized English invoice schema: seller name, customer name, RFC, seller address, invoice number, issue date, purchase details JSON, subtotal, taxes, and total
+- Duplicate and update detection by invoice number + seller name
 - Audit logging
 - Admin user management and settings
 
@@ -17,7 +18,7 @@ Web application for invoice digitization, duplicate detection, and intelligent q
    - `python -m venv .venv`
    - `.venv\Scripts\activate`
    - `python -m pip install -r requirements.txt`
-2. Copy `.env.example` to `.env` if needed.
+2. Copy `.env.example` to `.env` and configure the Azure Content Understanding variables.
 3. Start the app:
    - `streamlit run app.py`
 
